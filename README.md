@@ -827,7 +827,7 @@ Read these problems before you use PolicyPilot in production.
 | 5 | In-memory engine | `aggregation.py` supports only the allow-listed subset of MongoDB | Use it for the demo and tests only. Use `DOC_BACKEND=mongo` in production |
 | 6 | Planner | A maximum of 10,000 customer IDs go into the `$in` list | The answer has a note if the list is not complete |
 | 7 | State | The hybrid index and the session store are in process memory | A restart deletes them. Several API workers do not share history |
-| 8 | Back ends in CI | No CI test uses a real PostgreSQL or MongoDB server | Test `PostgresExecutor`, `MongoDocStore`, `seed_mongo()` and `write_postgres()` before production |
+| 8 | Back ends in CI | No CI test uses a real PostgreSQL or MongoDB server | Check `PostgresExecutor`, `MongoDocStore`, `seed_mongo()` and `write_postgres()` on real servers before production |
 | 9 | HTTP API | The token is optional and there is no rate limit | Set `API_TOKEN` and put a proxy with a rate limit in front of the API |
 | 10 | Chat UI | **New conversation** keeps the uploaded documents of the browser session | Open a new browser session to remove uploads |
 | 11 | Configuration | `DOC_BACKEND=memory` needs `SQL_BACKEND=sqlite` | Use `DOC_BACKEND=mongo` with PostgreSQL |

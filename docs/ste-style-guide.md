@@ -94,6 +94,7 @@ product names and URLs stay exactly as they are. They are technical names. Put t
 | **front end** | The CLI, the HTTP API or the chat UI | interface, client, frontend |
 | **gold query** | A correct SQL query or pipeline for a gold question | reference query, expected query |
 | **gold set** | The list of evaluation questions in `gold_questions.json` | test set, benchmark set |
+| **gold item** | One question in the gold set, with its gold query or its `relevant_sources` | case, sample, record |
 | **ground truth** | The result of a gold query on the data under test | expected answer, label |
 | **hybrid index** | The search index that fuses BM25 and embedding scores (`HybridIndex`) | vector store, search engine, knowledge base |
 | **input check** | The component that normalizes and limits the question (`clean_question()`). A technical name: the verb is "check" | sanitizer, input filter |
@@ -116,6 +117,7 @@ product names and URLs stay exactly as they are. They are technical names. Put t
 | **setting** | One configuration value that an environment variable gives | option, parameter, flag (for configuration) |
 | **SQL agent** | The agent for the `sql` route (`SQLAgent`) | text-to-SQL bot |
 | **statement** | One SQL command in a query text | SQL instruction |
+| **test** | One `pytest` test function or one parameter case of it. A noun only: the verb is "check" | unit check, spec |
 | **upload index** | A hybrid index for the PDF files of one browser session | user index, private store |
 | **query safety model** | The set of rules in code that limit what a query can read and how long it runs | security layer, guard rails |
 | **validator** | The code that checks a query against the allow-lists (`sql_guard.py`, `mongo_guard.py`) | guard, checker, sanitizer, filter |
@@ -124,6 +126,7 @@ product names and URLs stay exactly as they are. They are technical names. Put t
 
 | Verb | Meaning |
 |---|---|
+| **check** | Compare a value, a query or a component with a rule or a limit |
 | **cite** | Refer to a chunk by its number `[n]` in an answer |
 | **condense** | Change a follow-up question into a question that has its full meaning without the history |
 | **generate** | Make text with the LLM: a route decision, a query, a plan or an answer |
