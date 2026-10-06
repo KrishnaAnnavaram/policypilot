@@ -55,7 +55,7 @@ class Response:
             "query": a.query,
             "columns": a.result.columns if a.result else [],
             "rows": a.result.records()[:max_rows] if a.result else [],
-            "truncated": bool(a.result and a.result.truncated),
+            "truncated": bool(a.result and (a.result.truncated or len(a.result.rows) > max_rows)),
             "sources": [{"ref": s.ref, "source": s.source, "text": s.text} for s in a.sources],
             "attempts": len(a.attempts),
             "notes": a.notes,

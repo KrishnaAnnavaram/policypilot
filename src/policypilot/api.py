@@ -45,8 +45,9 @@ def create_app(service=None):
     def health() -> dict:
         return {"status": "ok"}
 
+    # a plain ``def``: FastAPI runs it in its thread pool, so a slow LLM call does not block the event loop
     @app.post("/ask", dependencies=[Depends(check_auth)])
-    async def ask(request: Request, body: AskRequest) -> dict:
+    def ask(request: Request, body: AskRequest) -> dict:
         if not request.headers.get("content-type", "").startswith("application/json"):
             raise HTTPException(status_code=415, detail="application/json required")
         return svc.ask(body.question, body.session_id).to_dict()

@@ -61,3 +61,17 @@ def test_build_service_auto_seeds_demo_database(tmp_path, demo_index):
     service = build_service(settings, llm=OfflineLLM(), index=demo_index)
     assert (tmp_path / "demo.db").exists()
     assert service.ask("How many customers are there?").answer.result.scalar() == 300
+
+
+def test_to_dict_marks_rows_cut_by_the_response_cap(make_service):
+    from policypilot.agents.base import AgentAnswer
+    from policypilot.agents.router import RouteDecision
+    from policypilot.backends.base import QueryResult
+    from policypilot.service import Response
+
+    result = QueryResult(columns=["n"], rows=[(i,) for i in range(5)])
+    response = Response("q", new_session_id(), RouteDecision("sql", 1.0, "", "llm"),
+                        AgentAnswer("sql", True, text="t", result=result))
+    capped = response.to_dict(max_rows=3)
+    assert len(capped["rows"]) == 3 and capped["truncated"] is True
+    assert response.to_dict(max_rows=5)["truncated"] is False
