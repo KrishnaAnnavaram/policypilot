@@ -4,14 +4,14 @@
 !.env.example
 
 # data, databases and generated reports are never committed
-data/
+/data/
 *.db
 *.sqlite
 *.sqlite3
 *.jsonl
 *.csv
 *.pdf
-reports/
+/reports/
 eval_report*.json
 
 # python
