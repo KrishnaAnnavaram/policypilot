@@ -1,0 +1,27 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# data, databases and generated reports are never committed
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.jsonl
+*.csv
+*.pdf
+reports/
+eval_report*.json
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/

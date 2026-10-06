@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "policypilot"
+version = "0.1.0"
+description = "Multi-agent insurance QA across SQL, MongoDB and policy PDFs, with validated read-only queries"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Krishna Annavaram" }]
+requires-python = ">=3.10"
+dependencies = ["sqlglot>=30,<32", "httpx>=0.27"]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+mongo = ["pymongo>=4.6"]
+rag = ["sentence-transformers>=2.7"]
+pdf = ["pypdf>=4.0"]
+api = ["fastapi>=0.110", "uvicorn>=0.29"]
+ui = ["streamlit>=1.35", "pypdf>=4.0"]
+all = ["policypilot[postgres,mongo,rag,pdf,api,ui]"]
+dev = ["pytest>=8", "ruff"]
+
+[project.scripts]
+policypilot = "policypilot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+policypilot = ["demo_docs/*.md", "evaluation/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 120
