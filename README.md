@@ -1,14 +1,14 @@
 <div align="center">
 
-# PolicyPilot — Safe Multi-Source Insurance Questions and Answers
+# policypilot — Safe Multi-Source Insurance Questions and Answers
 
 **PolicyPilot is a question-answer service for insurance customer data, vehicle and claim records and policy documents. It takes one plain-language question through these steps to a checked answer:**
 
 `input check` → `route` → `generate query` → `validate` → `run read-only` → `answer with query or citations`.
 
-![Routes](https://img.shields.io/badge/Routes-4_(sql_·_nosql_·_both_·_pdf)-1F3864?style=for-the-badge)
-![Validators](https://img.shields.io/badge/Query_validators-2_(SQL_%2B_pipeline)-2E5FD9?style=for-the-badge)
-![Back ends](https://img.shields.io/badge/Back_ends-4_(SQLite_·_PostgreSQL_·_MongoDB_·_in--memory)-6E86E8?style=for-the-badge)
+![Routes](https://img.shields.io/badge/Routes-4_%28sql_%C2%B7_nosql_%C2%B7_both_%C2%B7_pdf%29-1F3864?style=for-the-badge)
+![Validators](https://img.shields.io/badge/Query_validators-2_%28SQL_%2B_pipeline%29-2E5FD9?style=for-the-badge)
+![Back ends](https://img.shields.io/badge/Back_ends-4_%28SQLite_%C2%B7_PostgreSQL_%C2%B7_MongoDB_%C2%B7_in--memory%29-6E86E8?style=for-the-badge)
 ![Gold set](https://img.shields.io/badge/Gold_set-27_questions-4B6CB7?style=for-the-badge)
 ![Tests](https://img.shields.io/badge/Tests-197_passing-3DA35B?style=for-the-badge)
 ![Offline demo](https://img.shields.io/badge/Offline_demo-Yes-F5C542?style=for-the-badge)
@@ -36,6 +36,11 @@
 > This README uses ASD-STE100 Simplified Technical English. The writing rules and the project
 > vocabulary are in [`docs/ste-style-guide.md`](docs/ste-style-guide.md). Each term in the
 > [Glossary](#21-glossary) has only one meaning.
+
+> [!WARNING]
+> Do not use PolicyPilot answers to make underwriting, pricing or claim decisions about a person.
+> The demo data is synthetic and the policy documents are fictional. A generated query can answer
+> a different question than the user asked, so compare important answers with the source data.
 
 ---
 
@@ -719,7 +724,7 @@ policypilot ask "What is the average claim amount for married customers?"
 policypilot ask "How long is the grace period if I miss a premium payment?"
 policypilot ask "How many commercial SUVs are there?" --json
 policypilot eval --out reports/eval.json            # evaluation on the bundled gold set
-pytest -q                                           # 197 tests
+pytest -q                                           # 197 tests with the api extra
 ```
 
 HTTP API and chat UI:
@@ -799,7 +804,7 @@ Credentials are only in a local `.env` file. Git ignores this file. Do not print
 
 | Validation | Result | Command |
 |---|---|---|
-| Unit tests | **197 passed** | `pytest -q` |
+| Unit tests (CI, `.[dev,api]`) | **197 passed** | `pytest -q` |
 | Router (offline, 27 items) | 100% accuracy (27/27), macro-F1 1.000 | `policypilot eval` |
 | `execution accuracy`, `sql` / `nosql` / `both` | 100% / 100% / 100% | `policypilot eval` |
 | Retrieval `recall@4`, all `pdf` items | 75.0%, MRR 0.750 | `policypilot eval` |
@@ -807,6 +812,8 @@ Credentials are only in a local `.env` file. Git ignores this file. Do not print
 | Retrieval `recall@4`, `en->zh` (2 items) | **0%**, MRR 0.000 | `policypilot eval` |
 | Retrieval `recall@4`, `zh->zh` (1 item) | 100%, MRR 1.000 | `policypilot eval` |
 | HTTP API | `GET /health` 200, `POST /ask` 200, non-JSON body 422 | `policypilot serve` and `curl` |
+
+CI installs `.[dev,api]` and reports 197 passed. With `.[dev]` only, pytest skips `tests/test_api.py` (2 tests) because FastAPI is not installed.
 
 The evaluation ran on the synthetic demo database (300 customers, random seed 7) with the offline LLM and `RAG_TOP_K=4`. The tests use a scripted LLM, a temporary SQLite database, the in-memory document store and `httpx.MockTransport`. They cover 46 bad SQL and pipeline inputs, the read-only executor, JSON extraction and the aggregation engine. They also cover CSV repair, the retry loop, the planner join, sessions, the evaluation metrics and the HTTP API.
 
