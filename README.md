@@ -74,6 +74,7 @@ This README is the **one location that explains all of PolicyPilot**. It gives t
 4. 🔄 [The end-to-end workflow](#4-the-end-to-end-workflow)
    - 4.1 [Full flow](#41-full-flow)
    - 4.2 [The life cycle of one question](#42-the-life-cycle-of-one-question)
+   - 4.3 [Who does which step](#43-who-does-which-step)
 5. 🔵 [The canonical data model and the seed step](#5-the-canonical-data-model-and-the-seed-step)
 6. 🟢 [The input check and the session store](#6-the-input-check-and-the-session-store)
 7. 🟣 [The router](#7-the-router)
@@ -150,6 +151,71 @@ flowchart LR
 | Evaluation harness | `src/policypilot/evaluation/` | Gold set, ground truth, metrics and report |
 | Front ends | `cli.py`, `api.py`, `ui/app.py` | CLI, FastAPI HTTP API and Streamlit chat UI |
 
+The component map shows which module calls which module. An arrow points from the caller to the module that it uses.
+
+```mermaid
+flowchart TB
+    subgraph FRONT["Front ends"]
+        CLI["cli.py<br/>seed, ask, eval, serve, ui"]
+        API["api.py<br/>create_app"]
+        UI["ui/app.py<br/>Streamlit"]
+    end
+    SVC["service.py<br/>build_service, QAService"]
+    MEM["memory.py<br/>SessionStore"]
+    EVA["evaluation/<br/>evaluate, ground_truth"]
+    subgraph AGENTS["Agents"]
+        RT["router.py<br/>LLMRouter, KeywordRouter"]
+        SA["sql_agent.py<br/>SQLAgent"]
+        MA["mongo_agent.py<br/>MongoAgent"]
+        PL["planner.py<br/>Planner"]
+        RA["rag_agent.py<br/>RAGAgent"]
+    end
+    subgraph SAFE["Validators"]
+        SG["sql_guard.py<br/>validate_sql"]
+        MG["mongo_guard.py<br/>validate_pipeline"]
+        EX["extract.py<br/>extract_sql, extract_pipeline"]
+    end
+    subgraph BACK["Back ends"]
+        SQLX["backends/sql.py<br/>SQLiteExecutor, PostgresExecutor"]
+        DOCS["backends/docstore.py<br/>InMemoryDocStore, MongoDocStore"]
+    end
+    IDX["rag/<br/>HybridIndex, embedders, loaders"]
+    LLM["llm/<br/>OpenAICompatibleLLM, OfflineLLM"]
+    SCH["schema.py<br/>TABLES, DOC_FIELDS"]
+    DATA["data/<br/>synthetic, cleaning, seed"]
+
+    CLI --> SVC
+    CLI --> DATA
+    CLI --> EVA
+    API --> SVC
+    UI --> SVC
+    UI --> IDX
+    EVA --> SVC
+    SVC --> MEM
+    SVC --> RT
+    SVC --> SA
+    SVC --> MA
+    SVC --> PL
+    SVC --> RA
+    PL --> SA
+    PL --> MA
+    SA --> EX
+    SA --> SG
+    SA --> SQLX
+    MA --> EX
+    MA --> MG
+    MA --> DOCS
+    RA --> IDX
+    RT --> LLM
+    SA --> LLM
+    MA --> LLM
+    PL --> LLM
+    RA --> LLM
+    SG --> SCH
+    MG --> SCH
+    DATA --> SCH
+```
+
 ### 2.2 System context
 
 ```mermaid
@@ -208,6 +274,19 @@ The prompts tell the LLM to treat the question as data. A prompt cannot stop pro
 ### 3.2 One canonical data model
 `schema.py` holds one typed description of the 3 tables and the 15 document fields. The DDL, the synthetic data, the prompt text, the SQL column allow-list, the enum-value validation and the pipeline field allow-list all come from it. The tables and the documents share the key `customer_id`.
 
+```mermaid
+flowchart LR
+    SCH[("schema.py<br/>TABLES, DOC_FIELDS, enum values")] --> DDL["ddl: CREATE TABLE<br/>with CHECK for each enum"]
+    SCH --> SYN["synthetic.generate<br/>typed rows"]
+    SCH --> DOC["to_document<br/>nested document view"]
+    SCH --> PRM["describe_tables, describe_documents<br/>prompt text"]
+    SCH --> SP["SQLPolicy.from_schema<br/>table, column and enum allow-lists"]
+    SCH --> PP["mongo_guard DOC_FIELDS<br/>field and enum allow-lists"]
+    DDL --> DB[("SQLite or PostgreSQL")]
+    SYN --> DB
+    DOC --> DS[("Document store")]
+```
+
 ### 3.3 One factory for all front ends
 The CLI, the HTTP API, the chat UI and the evaluation harness all call `build_service()`. Thus the evaluation measures the same prompts, validators and connections that users get.
 
@@ -227,31 +306,78 @@ If `LLM_API_KEY` is empty, `Settings.from_env()` selects the offline LLM. The SQ
 ### 4.1 Full flow
 
 ```mermaid
-flowchart TB
-    Q["Question (CLI, HTTP API or chat UI)"] --> C["clean_question: NFKC, control characters, delimiter escape, length limit"]
-    C --> R["Router: LLM JSON with confidence, keyword router as backup"]
-    R -->|"sql"| S["SQL agent"]
-    R -->|"nosql"| M["Aggregation agent"]
-    R -->|"both"| P["Planner"]
-    R -->|"pdf"| G["RAG agent"]
-    S --> SV["SQL validator: one SELECT, allow-listed tables, columns and functions, enum values, LIMIT"]
-    SV --> SX["Read-only executor: SQLite mode=ro and authorizer, or PostgreSQL READ ONLY and statement_timeout"]
-    M --> MV["Pipeline validator: stage, operator and field allow-list, final $limit"]
-    MV --> MX["Document store: in-memory engine, or MongoDB with maxTimeMS"]
-    P -->|"customer question"| S
-    P -->|"customer_id $in list, added by code"| M
-    G --> IX["Hybrid index: BM25 and embeddings, RRF, session uploads"]
+flowchart TD
+    Q[/"Question and optional session ID<br/>CLI, HTTP API or chat UI"/] --> C{"clean_question: NFKC, control characters,<br/>delimiter escape, length limit"}
+    C -- "empty or too long" --> ERR[/"Error answer, route none"/]
+    C -- "clean text" --> R{"Router: LLM JSON with confidence,<br/>keyword router as backup"}
+    R -- "sql" --> S["SQL agent"]
+    R -- "nosql" --> M["Aggregation agent"]
+    R -- "both" --> P["Planner"]
+    R -- "pdf" --> G["RAG agent"]
+    S --> SV{"SQL validator: one SELECT, allow-listed tables,<br/>columns and functions, enum values, LIMIT"}
+    SV -- "passes" --> SX["Read-only executor: SQLite mode=ro and authorizer,<br/>or PostgreSQL READ ONLY and statement_timeout"]
+    M --> MV{"Pipeline validator: stage, operator<br/>and field allow-list, final $limit"}
+    MV -- "passes" --> MX["Document store: in-memory engine,<br/>or MongoDB with maxTimeMS"]
+    SV -. "rejected, retry up to MAX_ATTEMPTS" .-> S
+    MV -. "rejected, retry up to MAX_ATTEMPTS" .-> M
+    P -- "customer question" --> S
+    P -- "customer_id $in list, added by code" --> M
+    HIST[("Session store<br/>6 turns for each session")] -- "history" --> G
+    G --> IX["Hybrid index: BM25 and embeddings,<br/>RRF, session uploads"]
     SX --> A["Answerer: uses only the returned rows"]
     MX --> A
     IX --> A2["Cited answer and citation notes"]
+    A --> OUT[/"Answer, route, query, rows"/]
+    A2 --> OUT2[/"Answer, route, cited chunks"/]
+    OUT --> HIST
+    OUT2 --> HIST
+    OUT --> HUMAN{{"HUMAN<br/>compare important answers with the source data"}}
+    OUT2 --> HUMAN
     subgraph data["One canonical data model"]
-        D["customers, vehicles, claims (customer_id)"] --> DDL["SQL tables"]
-        D --> DOCV["Nested document view"]
+        D["customers, vehicles, claims (customer_id)"] --> DDL[("SQL tables")]
+        D --> DOCV[("Nested document view")]
     end
+    DDL --> SX
+    DOCV --> MX
     EV["Evaluation harness: gold queries on the same back ends"] -.-> R
+
+    classDef human fill:#fff3cd,stroke:#b8901f,color:#3d2f00,font-weight:bold
+    class HUMAN human
 ```
 
 ### 4.2 The life cycle of one question
+
+```mermaid
+stateDiagram-v2
+    state "Raw question" as Raw
+    state "Clean question" as Clean
+    state "RouteDecision" as Routed
+    state "Agent attempt n" as Attempt
+    state "Valid query" as Valid
+    state "Query result" as Result
+    state "Retrieved chunks" as Chunks
+    state "AgentAnswer ok" as AnswerOk
+    state "AgentAnswer not ok" as AnswerFail
+    state "In session history" as Stored
+    [*] --> Raw: front end calls QAService.ask
+    Raw --> Rejected: empty or too long, route none
+    Raw --> Clean: clean_question
+    Clean --> Routed: router.route
+    Routed --> Attempt: sql, nosql or both
+    Routed --> Chunks: pdf, condense and retrieve
+    Attempt --> Valid: extract and validate
+    Attempt --> Attempt: ExtractionError or validation error, attempts left
+    Valid --> Result: execute or aggregate
+    Valid --> Attempt: QueryError, attempts left
+    Attempt --> AnswerFail: LLM error or MAX_ATTEMPTS used
+    Result --> AnswerOk: Answerer.compose
+    Chunks --> AnswerFail: no hits or LLM error
+    Chunks --> AnswerOk: cited answer
+    AnswerOk --> Stored: SessionStore.add
+    AnswerFail --> Stored: SessionStore.add
+    Stored --> [*]
+    Rejected --> [*]
+```
 
 1. A front end sends the question and an optional session ID to `QAService.ask()`.
 2. If the session ID is not 32 hexadecimal characters, the service makes a new random ID.
@@ -264,11 +390,81 @@ flowchart TB
 9. The service adds the question and the answer to the session history.
 10. The front end shows the answer, the route, the query and the rows or the cited chunks.
 
+### 4.3 Who does which step
+
+The diagram shows a `both` question through the HTTP API. The other routes use one agent only.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant API as HTTP API POST /ask
+    participant SVC as QAService
+    participant RT as LLMRouter
+    participant PL as Planner
+    participant SA as SQLAgent
+    participant MA as MongoAgent
+    participant LLM as LLM client
+    participant DB as Read-only SQL executor
+    participant DS as Document store
+
+    U->>API: question and session_id
+    API->>API: check_auth, AskRequest, content type
+    API->>SVC: ask(question, session_id)
+    SVC->>SVC: clean_question
+    SVC->>RT: route(text)
+    RT->>LLM: ROUTER prompt, JSON mode
+    LLM-->>RT: route both, confidence, reason
+    SVC->>PL: run(text)
+    PL->>LLM: PLAN prompt, JSON mode
+    LLM-->>PL: customer_question, claims_question
+    PL->>SA: query(customer_question, return only customer_id)
+    SA->>LLM: SQL prompt
+    LLM-->>SA: SQL text
+    SA->>SA: extract_sql, validate_sql
+    SA->>DB: execute, maximum 10,000 rows
+    DB-->>SA: customer_id rows
+    SA-->>PL: LoopOutcome
+    PL->>MA: query(claims_question, prefix with customer_id $in)
+    MA->>LLM: PIPELINE prompt
+    LLM-->>MA: pipeline JSON
+    MA->>MA: extract_pipeline, validate_pipeline, add the prefix
+    MA->>DS: aggregate(prefix + pipeline)
+    DS-->>MA: records
+    MA-->>PL: LoopOutcome
+    PL->>LLM: ANSWER prompt with the result rows
+    LLM-->>PL: answer text
+    PL-->>SVC: AgentAnswer with notes
+    SVC->>SVC: SessionStore.add
+    SVC-->>API: Response
+    API-->>U: JSON: route, answer, query, rows, notes
+```
+
 ---
 
 ## 5. The canonical data model and the seed step
 
 **Purpose.** Give one typed data model to all components, and fill the databases from one dataset.
+
+```mermaid
+flowchart TD
+    CMD[/"policypilot seed<br/>Settings.from_env"/] --> CSVQ{"--csv given?"}
+    CSVQ -- "yes" --> CL["load_csv: repair money, prefixes,<br/>gender, IDs, dates, categories"]
+    CSVQ -- "no" --> GEN["generate: 300 customers,<br/>random seed 7"]
+    CL --> DSET[("Dataset: customers,<br/>vehicles, claims")]
+    GEN --> DSET
+    DSET --> WS["write_sqlite: delete the old file,<br/>apply schema.ddl, insert"]
+    WS --> SQ[("data/policypilot.db")]
+    DSET --> BD["build_documents:<br/>one document for each vehicle"]
+    BD --> JQ{"--jsonl PATH?"}
+    JQ -- "yes" --> JL[("JSON lines for mongoimport")]
+    BD --> MQ{"--mongo?"}
+    MQ -- "yes" --> SM["seed_mongo with the admin URI:<br/>new collection, $jsonSchema, indexes"]
+    SM --> MDB[("MongoDB collection")]
+    DSET --> PQ{"--postgres OWNER_DSN?"}
+    PQ -- "yes" --> WP["write_postgres: DDL and rows"]
+    WP --> PDB[("PostgreSQL tables")]
+```
 
 | Input | Output |
 |---|---|
@@ -285,6 +481,49 @@ flowchart TB
 | Document view | 15 field paths: one document per vehicle with nested `car.*` and `claims.*` fields | Same enum values as the tables |
 
 All three tables have the column `customer_id`. In the document view, numbers are numbers and flags are `true` or `false`.
+
+```mermaid
+erDiagram
+    customers ||--o{ vehicles : "owns"
+    vehicles ||--o| claims : "has one claim record"
+    customers ||--o{ claims : "customer_id"
+    customers {
+        INTEGER customer_id PK
+        DATE birth_date
+        INTEGER age
+        TEXT gender "F or M"
+        SMALLINT married
+        SMALLINT single_parent
+        INTEGER income
+        INTEGER home_value
+        TEXT education "5 values"
+        TEXT occupation "9 values"
+    }
+    vehicles {
+        INTEGER vehicle_id PK
+        INTEGER customer_id FK
+        TEXT car_use "Private or Commercial"
+        TEXT car_type "6 values"
+        SMALLINT red_car
+        INTEGER car_age
+        INTEGER bluebook_value
+        INTEGER years_insured
+        TEXT urbanicity "Urban or Rural"
+    }
+    claims {
+        INTEGER claim_id PK
+        INTEGER vehicle_id FK
+        INTEGER customer_id FK
+        INTEGER claims_last_5y
+        INTEGER past_claims_total
+        SMALLINT license_revoked
+        INTEGER mvr_points
+        INTEGER claim_amount
+        SMALLINT claim_flag
+    }
+```
+
+The diagram shows the keys and the main columns. `build_documents()` joins each vehicle to its claim record to make one nested document.
 
 **Procedure**
 
@@ -322,6 +561,16 @@ All three tables have the column `customer_id`. In the document view, numbers ar
 
 **Purpose.** Reject bad input before it reaches the LLM, and keep each user's history separate.
 
+```mermaid
+flowchart LR
+    IN[/"Raw question"/] --> N["unicodedata NFKC"]
+    N --> C["Control characters to spaces,<br/>strip outer spaces"]
+    C --> E["Less-than and greater-than signs<br/>to ‹ and ›"]
+    E --> X{"Empty, or more than<br/>MAX_QUESTION_CHARS?"}
+    X -- "yes" --> ERR[/"Error answer: route none,<br/>source input-check"/]
+    X -- "no" --> OK[/"Clean question for the router"/]
+```
+
 | Input | Output |
 |---|---|
 | Raw question text, optional session ID | Clean question text, a valid session ID, or an error answer |
@@ -336,6 +585,20 @@ All three tables have the column `customer_id`. In the document view, numbers ar
 
 **Session rules** (`memory.py`)
 
+```mermaid
+flowchart LR
+    SID[/"Session ID from the client"/] --> V{"is_valid_session_id:<br/>32 hexadecimal characters?"}
+    V -- "no" --> NEW["new_session_id:<br/>uuid4 hex"]
+    V -- "yes" --> H["SessionStore.history:<br/>earlier turns"]
+    NEW --> H
+    H --> RAG["RAG agent condenses<br/>a follow-up question"]
+    RAG --> ADD["SessionStore.add:<br/>question and answer"]
+    ADD --> T{"More than 6 turns,<br/>or more than 1,000 sessions?"}
+    T -- "yes" --> DROP["Drop the oldest turn,<br/>or the least recently used session"]
+    T -- "no" --> STORE[("OrderedDict in process memory")]
+    DROP --> STORE
+```
+
 - A session ID is a `uuid4` value with 32 hexadecimal characters. The server makes it.
 - The service replaces a client session ID that does not have this format.
 - `SessionStore` keeps a maximum of 1,000 sessions (least recently used goes first) and 6 turns for each session.
@@ -347,6 +610,23 @@ All three tables have the column `customer_id`. In the document view, numbers ar
 ## 7. The router
 
 **Purpose.** Select one route for each question.
+
+```mermaid
+flowchart TD
+    Q[/"Clean question"/] --> CALL["LLMRouter: ROUTER prompt,<br/>JSON mode"]
+    CALL --> PARSE{"LLM call and<br/>extract_json_object succeed?"}
+    PARSE -- "no" --> KF1["KeywordRouter.route"]
+    PARSE -- "yes" --> VALID{"route in sql, nosql,<br/>both, pdf?"}
+    VALID -- "no" --> KF1
+    VALID -- "yes" --> CLAMP["Limit confidence to 0 to 1"]
+    CLAMP --> LOW{"confidence below<br/>ROUTER_MIN_CONFIDENCE?"}
+    LOW -- "no" --> LLMR[/"LLM route, source llm,<br/>reason up to 200 characters"/]
+    LOW -- "yes" --> KW["KeywordRouter.route"]
+    KW --> SAME{"Same route as the LLM?"}
+    SAME -- "yes" --> LLMR
+    SAME -- "no" --> KWR[/"Keyword route,<br/>source keywords-fallback"/]
+    KF1 --> KWR
+```
 
 | Input | Output |
 |---|---|
@@ -383,6 +663,28 @@ All three tables have the column `customer_id`. In the document view, numbers ar
 
 **Purpose.** Answer `sql` questions about customer demographics with one validated SQL query.
 
+```mermaid
+flowchart TD
+    IN[/"Clean question"/] --> SYS["System prompt: prompts.SQL<br/>with SQL_DIALECT and describe_tables"]
+    SYS --> WRAP["wrap_question: question tags,<br/>feedback after a failure"]
+    WRAP --> CALL["llm.complete"]
+    CALL -- "LLMError" --> FAIL[/"AgentAnswer ok false:<br/>the LLM is unavailable"/]
+    CALL --> EXT{"extract_sql: remove think blocks,<br/>first sql code block, from SELECT or WITH"}
+    EXT -- "ExtractionError" --> FB["Feedback: first 1,500 characters<br/>of the LLM text and the error"]
+    EXT --> VAL{"validate_sql:<br/>parse, allow-lists, LIMIT"}
+    VAL -- "SQLValidationError" --> FB
+    VAL --> RUN{"executor.execute<br/>the generated SQL"}
+    RUN -- "QueryError" --> FB
+    FB --> MORE{"Attempts left?<br/>MAX_ATTEMPTS"}
+    MORE -- "yes" --> WRAP
+    MORE -- "no" --> FAIL2[/"AgentAnswer ok false:<br/>no valid query after N attempts"/]
+    RUN -- "QueryResult" --> ANS["Answerer.compose: ANSWER prompt<br/>with a maximum of 50 rows"]
+    ANS --> EMPTY{"LLM failed<br/>or empty text?"}
+    EMPTY -- "yes" --> PLAIN["offline.summarize:<br/>plain sentence from the rows"]
+    EMPTY -- "no" --> OUT[/"AgentAnswer: text, SQL,<br/>rows, attempts"/]
+    PLAIN --> OUT
+```
+
 | Input | Output |
 |---|---|
 | Clean question | `AgentAnswer`: answer text, SQL query that ran, result rows, attempts |
@@ -418,6 +720,27 @@ All three tables have the column `customer_id`. In the document view, numbers ar
 
 **Purpose.** Answer `nosql` questions about vehicles and claims with one validated aggregation pipeline.
 
+```mermaid
+flowchart TD
+    IN[/"Clean question,<br/>optional prefix from the planner"/] --> SYS["System prompt: prompts.PIPELINE<br/>with the 15 document fields"]
+    SYS --> CALL["llm.complete in generate_and_run,<br/>same retry loop as the SQL agent"]
+    CALL --> EXT{"extract_pipeline: array, pipeline key<br/>or db.x.aggregate, raw_decode"}
+    EXT -- "ExtractionError" --> FB["Feedback to the LLM,<br/>next attempt"]
+    FB -- "MAX_ATTEMPTS used" --> FAIL[/"AgentAnswer ok false"/]
+    EXT --> VAL{"validate_pipeline: shape, stages,<br/>operators, fields, values"}
+    VAL -- "PipelineValidationError" --> FB
+    VAL --> LIM["Add or reduce the final $limit<br/>to MAX_ROWS"]
+    LIM --> PRE["Trusted code: prefix stages<br/>in front of the validated pipeline"]
+    PRE --> STORE{"DOC_BACKEND"}
+    STORE -- "memory" --> MEMS["InMemoryDocStore:<br/>aggregation.run_pipeline"]
+    STORE -- "mongo" --> MON["MongoDocStore: maxTimeMS,<br/>allowDiskUse False"]
+    MEMS -- "QueryError" --> FB
+    MON -- "QueryError" --> FB
+    MEMS --> ANS["Answerer.compose"]
+    MON --> ANS
+    ANS --> OUT[/"AgentAnswer: text, pipeline<br/>without the prefix, rows"/]
+```
+
 | Input | Output |
 |---|---|
 | Clean question, optional prefix stages from the planner | `AgentAnswer`: answer text, validated pipeline, result rows, attempts |
@@ -451,6 +774,26 @@ All three tables have the column `customer_id`. In the document view, numbers ar
 
 **Purpose.** Answer `both` questions that need demographics and vehicle or claim data, with the join in code.
 
+```mermaid
+flowchart TD
+    Q[/"Clean question"/] --> PLAN{"PLAN prompt in JSON mode:<br/>two sub-questions returned?"}
+    PLAN -- "no" --> SAME["Both sub-questions are<br/>the original question"]
+    PLAN -- "yes" --> SUB["customer_question,<br/>claims_question"]
+    SAME --> SQLQ
+    SUB --> SQLQ["SQLAgent.query: return only customer_id,<br/>max_rows 10,000"]
+    SQLQ --> OK1{"Query ok?"}
+    OK1 -- "no" --> F1[/"Error: could not select the customers"/]
+    OK1 -- "yes" --> COL{"customer_id column<br/>in the result?"}
+    COL -- "no" --> F2[/"Error: no customer_id column"/]
+    COL -- "yes" --> IDS["Sorted distinct customer_id values,<br/>note if truncated at 10,000"]
+    IDS --> PRE["Code makes the prefix:<br/>$match customer_id $in ids"]
+    PRE --> MQ["MongoAgent.query<br/>claims_question with the prefix"]
+    MQ --> OK2{"Query ok?"}
+    OK2 -- "no" --> F3[/"Error: could not query the claims"/]
+    OK2 -- "yes" --> ANS["Answerer.compose<br/>from the pipeline result"]
+    ANS --> OUT[/"AgentAnswer: SQL and pipeline,<br/>rows, notes with the customer count"/]
+```
+
 | Input | Output |
 |---|---|
 | Clean question | `AgentAnswer` with the SQL query, the pipeline, the result rows and notes |
@@ -478,6 +821,29 @@ All three tables have the column `customer_id`. In the document view, numbers ar
 
 **Purpose.** Answer `pdf` questions about policy text with citations to numbered chunks.
 
+```mermaid
+flowchart TD
+    Q[/"Clean question, session history,<br/>optional upload index"/] --> H{"History present?"}
+    H -- "yes" --> CON["CONDENSE prompt:<br/>standalone question"]
+    H -- "no" --> SQ["Standalone question"]
+    CON --> LEN{"LLM error, or text empty<br/>or more than 1,000 characters?"}
+    LEN -- "yes" --> SQ0["Keep the original question"]
+    LEN -- "no" --> SQ
+    SQ0 --> SQ
+    SQ --> RET["search RAG_TOP_K in the shared index<br/>and in each upload index"]
+    RET --> MERGE["merge_hits: best score for each chunk,<br/>top RAG_TOP_K"]
+    MERGE --> HITS{"Any chunk?"}
+    HITS -- "no" --> NOHIT[/"AgentAnswer ok false"/]
+    HITS -- "yes" --> CTX["Numbered context tags<br/>with id and source"]
+    CTX --> GENA["RAG prompt to the LLM"]
+    GENA -- "LLMError" --> NOHIT
+    GENA --> CIT["Find each citation n"]
+    CIT --> NOTE{"Unknown citation,<br/>or no citation?"}
+    NOTE -- "yes" --> N1["Add a note"]
+    NOTE -- "no" --> OUT
+    N1 --> OUT[/"AgentAnswer: text, sources, notes"/]
+```
+
 | Input | Output |
 |---|---|
 | Clean question, session history, optional session upload index | Answer text, cited chunks (`sources`), notes about citations |
@@ -493,6 +859,30 @@ All three tables have the column `customer_id`. In the document view, numbers ar
 7. The agent finds each citation `[n]`. A note tells about citations to unknown chunks or an answer with no citation.
 
 **The hybrid index** (`rag/index.py`, `rag/text.py`, `rag/embeddings.py`)
+
+```mermaid
+flowchart LR
+    subgraph ADD["add_document"]
+        D[/"Document text, source"/] --> HASH{"SHA-256 already<br/>in the index?"}
+        HASH -- "yes" --> SKIP["Add nothing"]
+        HASH -- "no" --> CH["chunk_text: sentences,<br/>700 characters, 120 overlap"]
+        CH --> EMB["embedder.embed, kind passage"]
+        CH --> TOK["tokenize: term counts<br/>for BM25"]
+    end
+    subgraph SEARCH["search"]
+        QQ[/"Query"/] --> BM["BM25 score,<br/>k1 1.5, b 0.75"]
+        QQ --> DN["Cosine score of<br/>the query embedding"]
+        BM --> RRF["Reciprocal-rank fusion,<br/>k 60"]
+        DN --> RRF
+        RRF --> CAND["Top 3 x k candidates"]
+        CAND --> RR{"Reranker given?"}
+        RR -- "yes" --> RER["reranker.rerank"]
+        RR -- "no" --> TOPK[/"Top k hits"/]
+        RER --> TOPK
+    end
+    EMB --> DN
+    TOK --> BM
+```
 
 | Item | Value |
 |---|---|
@@ -524,6 +914,33 @@ All three tables have the column `customer_id`. In the document view, numbers ar
 
 **Purpose.** Give the same service to a terminal user, an HTTP client and a browser user.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as HTTP client
+    participant A as FastAPI app
+    participant G as check_auth
+    participant H as ask handler, thread pool
+    participant S as QAService
+
+    C->>A: POST /ask, JSON body
+    A->>G: Authorization header
+    alt API_TOKEN set and the token is wrong
+        G-->>C: 401
+    end
+    A->>A: AskRequest: question 1 to MAX_QUESTION_CHARS, session_id up to 64
+    alt body not valid
+        A-->>C: 422
+    end
+    A->>H: request and body
+    alt content type not application/json
+        H-->>C: 415
+    end
+    H->>S: ask(question, session_id)
+    S-->>H: Response
+    H-->>C: to_dict: maximum 50 rows
+```
+
 **CLI commands** (`policypilot`, from `cli.py`)
 
 | Command | Options | Result |
@@ -552,6 +969,19 @@ The `POST /ask` response has these fields: `session_id`, `route`, `route_confide
 
 **Chat UI** (`ui/app.py`)
 
+```mermaid
+flowchart LR
+    START["Browser session starts"] --> INIT["New session ID, empty messages,<br/>empty upload HybridIndex"]
+    UP[/"PDF upload in the sidebar"/] --> DUP{"SHA-256 already<br/>in this session?"}
+    DUP -- "yes" --> SKIP["Skip the file"]
+    DUP -- "no" --> IDX["pdf_text, add_document<br/>to the upload index"]
+    INIT --> ASK
+    IDX --> ASK["service.ask with<br/>extra_indexes = uploads"]
+    Q[/"Chat input"/] --> ASK
+    ASK --> SHOW[/"Answer, route, source, confidence,<br/>query, rows, cited chunks"/]
+    NEWC["New conversation button"] --> CLR["Clear the history,<br/>new session ID, uploads stay"]
+```
+
 - Each process builds the service one time with `st.cache_resource`.
 - Each browser session gets its own session ID, chat history and upload index.
 - The sidebar accepts PDF uploads. The UI skips a file with a SHA-256 hash that it already has.
@@ -569,6 +999,25 @@ The `POST /ask` response has these fields: `session_id`, `route`, `route_confide
 ## 13. The evaluation harness
 
 **Purpose.** Measure the router, the end-to-end query accuracy and the retrieval on a gold set. The ground truth comes from the data.
+
+```mermaid
+flowchart TD
+    G[/"gold_questions.json or --gold PATH"/] --> LG{"load_gold: unique IDs, known routes,<br/>a gold query or relevant_sources?"}
+    LG -- "no" --> GE[/"GoldSetError"/]
+    LG -- "yes" --> CG{"check_gold_queries:<br/>each gold query passes the validators?"}
+    CG -- "no" --> GE
+    CG -- "yes" --> EACH["For each item: router.route"]
+    EACH --> KIND{"Data item?<br/>sql, nosql, both"}
+    KIND -- "yes" --> GT{"ground_truth: gold query<br/>through validator and executor"}
+    GT -- "fails" --> GERR["Record in gold_errors"]
+    GT -- "rows" --> ANS["service.answer with<br/>the predicted route"]
+    ANS --> CMP["results_match: columns ignored,<br/>rows unordered unless ordered, tolerance"]
+    KIND -- "no, pdf" --> RET["rag_agent.retrieve:<br/>recall@k, reciprocal rank, language pair"]
+    CMP --> SUM["summarize: routing accuracy and F1,<br/>execution accuracy, retrieval"]
+    RET --> SUM
+    GERR --> SUM
+    SUM --> OUT[/"format_report on screen,<br/>JSON report with --out"/]
+```
 
 | Input | Output |
 |---|---|
@@ -615,6 +1064,26 @@ The code enforces each rule in this section. Prompt injection can change which a
 
 **SQL validator** (`safety/sql_guard.py`)
 
+```mermaid
+flowchart TD
+    IN[/"SQL text from extract_sql"/] --> C1{"Not empty, 4,000 characters or less,<br/>parses, one statement?"}
+    C1 -- "yes" --> C2{"SELECT or set operation,<br/>no forbidden node?"}
+    C2 -- "yes" --> C3{"Tables in SQL_ALLOWED_TABLES or a CTE,<br/>no schema name, no table function?"}
+    C3 -- "yes" --> C4{"Each column allowed or an alias,<br/>star only in COUNT?"}
+    C4 -- "yes" --> C5{"Each function in<br/>ALLOWED_FUNCTIONS?"}
+    C5 -- "yes" --> C6{"Enum literals valid?"}
+    C6 -- "yes" --> C7{"LIMIT an integer literal?"}
+    C7 -- "yes" --> LIM["Add LIMIT, or reduce it to MAX_ROWS"]
+    LIM --> OUT[/"SQL generated again from the tree<br/>in the executor dialect"/]
+    C1 -- "no" --> REJ[/"SQLValidationError,<br/>feedback to the LLM"/]
+    C2 -- "no" --> REJ
+    C3 -- "no" --> REJ
+    C4 -- "no" --> REJ
+    C5 -- "no" --> REJ
+    C6 -- "no" --> REJ
+    C7 -- "no" --> REJ
+```
+
 | Rule | Detail |
 |---|---|
 | Size | A maximum of 4,000 characters |
@@ -630,6 +1099,23 @@ The code enforces each rule in this section. Prompt injection can change which a
 | Output | `sqlglot` generates the SQL again from the checked tree, without comments, in the executor dialect |
 
 **Pipeline validator** (`safety/mongo_guard.py`)
+
+```mermaid
+flowchart TD
+    IN[/"Pipeline from extract_pipeline"/] --> P1{"Non-empty array,<br/>12 stages or less?"}
+    P1 -- "yes" --> P2["For each stage: _Checker.stage"]
+    P2 --> P3{"One key, an allowed stage,<br/>depth 12 and 600 nodes or less?"}
+    P3 -- "yes" --> P4{"Operators allowed, no forbidden<br/>operator, no $$ variable?"}
+    P4 -- "yes" --> P5{"Field paths in the document view<br/>or from an earlier stage?"}
+    P5 -- "yes" --> P6{"$match values scalar, strings 200 or less,<br/>enum values valid, $skip and $limit in range?"}
+    P6 -- "yes" --> LIM["Final $limit added,<br/>or reduced to MAX_ROWS"]
+    LIM --> OUT[/"ValidatedPipeline"/]
+    P1 -- "no" --> REJ[/"PipelineValidationError,<br/>feedback to the LLM"/]
+    P3 -- "no" --> REJ
+    P4 -- "no" --> REJ
+    P5 -- "no" --> REJ
+    P6 -- "no" --> REJ
+```
 
 | Rule | Detail |
 |---|---|
@@ -744,6 +1230,14 @@ Production back ends:
 2. Seed with owner accounts: `policypilot seed --postgres "<owner dsn>" --mongo --mongo-admin-uri "<admin uri>"`.
 3. Make the read-only accounts with `deploy/postgres_readonly_role.sql` and `deploy/mongo_readonly_user.js`.
 4. Set `SQL_BACKEND=postgres`, `DOC_BACKEND=mongo`, and `POSTGRES_DSN` and `MONGO_URI` for the read-only accounts.
+
+```mermaid
+flowchart LR
+    I["pip install -e .[postgres,mongo]"] --> S["policypilot seed --postgres<br/>--mongo --mongo-admin-uri"]
+    S --> R["deploy/postgres_readonly_role.sql,<br/>deploy/mongo_readonly_user.js"]
+    R --> E["SQL_BACKEND=postgres, DOC_BACKEND=mongo,<br/>read-only POSTGRES_DSN and MONGO_URI"]
+    E --> A["policypilot ask, serve or ui"]
+```
 
 To load the public "Car Insurance Claim" CSV, run `policypilot seed --csv car_insurance_claim.csv`. The repository does not include this file.
 
